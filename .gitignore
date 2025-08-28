@@ -1,0 +1,11 @@
+node_modules
+.allure-results
+allure-results
+allure-report
+allure-history
+tmp
+*.log
+apps/*.ipa
+apps/*.app
+apps/*.apk
+.env
