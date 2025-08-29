@@ -36,42 +36,42 @@ jobs:
       - name: Run tests on Android emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 33
+          api-level: 30                 # mais leve e baixa mais rápido que 33
           target: google_apis
           arch: x86_64
-          profile: pixel_6
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          profile: Nexus 5X             # <== troquei: é um profile suportado hoje
+          force-avd-creation: true      # garante recriação do AVD se algo quebrar
+          emulator-boot-timeout: 1200   # dá tempo para o primeiro boot
+          emulator-options: >
+            -no-window -no-snapshot -noaudio -no-boot-anim
+            -gpu swiftshader_indirect -accel off
           disable-animations: true
           script: |
-            set -euxo pipefail
+            echo "== devices (antes) =="
+            adb devices -l || true
 
-            echo "== Versões =="
             node -v
             java -version
 
-            echo "== Instalar deps do projeto =="
+            # deps do projeto
             npm ci
 
-            echo "== Instalar Appium 3 GLOBAL e driver uiautomator2 =="
+            # Appium 3
             npm i -g appium@next
             appium -v
-            which appium
-
-            # MUITO IMPORTANTE: usar o appium@next também no npx,
-            # senão o npx pode pegar o Appium 2 local.
             npx --yes appium@next driver install uiautomator2
             npx --yes appium@next driver list --installed
 
-            # (opcional) checagem de ambiente; não falha o build
-            npx --yes @appium/doctor || true
+            echo "== aguardando boot =="
+            adb wait-for-device
+            adb shell 'while [[ $(getprop sys.boot_completed) -ne 1 ]]; do sleep 2; done; input keyevent 82'
 
-            echo "== Rodar testes =="
-            # ajuste o script conforme seu package.json
-            npm run test:android:ci || npm run test:android || true
+            # seus testes (use smoke se quiser acelerar)
+            npm run test:android:ci || npm run test:android:smoke
 
-            echo "== Gerar site do Allure =="
-            # gere o report, mas não mate o job se falhar
+            # gerar Allure (não falhar a pipeline se não houver)
             npm run allure:generate || true
+
 
       # Coletar logs SEMPRE (mesmo se falhar acima)
       - name: Coletar logs de diagnóstico (sempre)
