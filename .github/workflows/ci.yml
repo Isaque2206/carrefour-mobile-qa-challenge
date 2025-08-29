@@ -1,10 +1,9 @@
-name: CI
+﻿name: CI
 
 on:
   push:
-    branches: [ "main", "*" ]
+    branches: ["*"]
   pull_request:
-    branches: [ "main", "*" ]
 
 permissions:
   contents: read
@@ -12,67 +11,95 @@ permissions:
   id-token: write
 
 jobs:
-  build-test:
+  test:
     name: Build & Test (Android Emulator + Appium)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Setup Java (JDK 17)
+      - name: Setup Temurin JDK 11
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
+          distribution: temurin
+          java-version: '11'
 
       - name: Run tests on Android emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 30
+          api-level: 33
+          target: google_apis
           arch: x86_64
-          target: default
-          profile: pixel_5
+          profile: pixel_6
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          disable-animations: true
           script: |
+            set -euo pipefail
+            node -v
+            java -version
+
+            # Dependências do projeto
             npm ci
-            npx appium driver install uiautomator2
-            npx appium --log-level error & npx wait-on tcp:4723
-            npm run test
+
+            echo "==> Instalando Appium 3 (next) globalmente"
+            npm i -g appium@next
+
+            echo "==> Descobrindo binário global do npm"
+            APP_BIN="Unknown command: "bin"  To see a list of supported npm commands, run:   npm help"
+            echo "npm bin -g: "
+            "/appium" -v || true
+
+            echo "==> Instalando driver uiautomator2 com Appium 3 global"
+            if ! "/appium" driver install uiautomator2; then
+              echo "Fallback: usando npx appium@next"
+              npx --yes appium@next driver install uiautomator2
+            fi
+
+            echo "==> Listando drivers instalados (Appium 3)"
+            "/appium" driver list --installed || npx --yes appium@next driver list --installed
+
+            echo "==> Executando testes"
+            npm run test:android:ci
+
+            echo "==> Gerando relatório Allure"
             npm run allure:generate
 
-      - name: Upload allure-results (artefato)
+      - name: Save Allure results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: allure-results
           path: allure-results
 
-      - name: Upload allure-report (artefato)
+      - name: Save Allure site
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: allure-report
-          path: allure-report
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
+          name: allure-site
           path: allure-report
 
   deploy-pages:
-    needs: build-test
+    name: Deploy Allure to GitHub Pages
+    needs: test
     runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    if: always()
     steps:
-      - name: Deploy Allure to GitHub Pages
-        id: deployment
+      - name: Download allure-site artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: allure-site
+          path: ./allure-site
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./allure-site
+
+      - name: Deploy to GitHub Pages
         uses: actions/deploy-pages@v4
