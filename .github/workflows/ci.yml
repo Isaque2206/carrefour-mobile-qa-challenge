@@ -36,28 +36,52 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install deps
+      - name: Install deps + preparar Appium/driver
         run: |
           set -euxo pipefail
+          mkdir -p ci-logs
           npm ci
-          # Garantir Appium + driver sempre atualizados (local via npx)
-          npx -y appium@latest --version
-          npx -y appium@latest driver install uiautomator2@latest || npx -y appium@latest driver update uiautomator2 || true
-          npx -y appium@latest driver list --installed || true
 
-      - name: Download APK (robusto, sem --latest)
+          # Fix: alinhar Appium v3 com driver uiautomator2 v5.x
+          npx -y appium@3 --version
+          # Tentar upgrade maior (pede --unsafe)
+          npx -y appium@3 driver update uiautomator2 --unsafe || true
+          # Se ainda não estiver na linha 5.x, reinstalar forçando latest
+          if ! npx -y appium@3 driver list --installed | grep -q 'uiautomator2@5'; then
+            npx -y appium@3 driver uninstall uiautomator2 || true
+            npx -y appium@3 driver install uiautomator2@latest
+          fi
+          npx -y appium@3 driver list --installed || true
+
+      - name: Download APK (robusto, sem --latest quebrado)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euxo pipefail
-          tmpdir=$(mktemp -d)
-          TAG=$(gh release list --repo webdriverio/native-demo-app --limit 1 | awk 'NR==1{print $1}')
-          if [ -z "$TAG" ]; then TAG="v1.0.8"; fi
+          tmpdir="$(mktemp -d)"
+
+          # 1) Tenta pegar o tag mais recente de forma estável
+          TAG="$(gh release view --repo webdriverio/native-demo-app --json tagName -q .tagName 2>/dev/null || true)"
+
+          # 2) Fallback: lista releases (exclui draft/prerelease) e pega o mais novo
+          if [ -z "${TAG:-}" ]; then
+            TAG="$(gh release list --repo webdriverio/native-demo-app --limit 50 --json tagName,isDraft,isPrerelease,createdAt \
+              -q 'map(select(.isDraft==false)) | map(select(.isPrerelease==false)) | sort_by(.createdAt) | reverse | .[0].tagName' || true)"
+          fi
+
+          # 3) Último fallback: usar um tag conhecido
+          if [ -z "${TAG:-}" ] || [ "${TAG}" = "null" ]; then
+            TAG="v1.0.8"
+          fi
+          echo "Usando TAG: $TAG"
+
           gh release download "$TAG" --repo webdriverio/native-demo-app -D "$tmpdir" -p '*[Aa]ndroid*apk'
-          APK_FILE=$(find "$tmpdir" -name '*.apk' | head -n1)
+          APK_FILE="$(find "$tmpdir" -name '*.apk' | head -n1)"
+          test -n "$APK_FILE"
           mv "$APK_FILE" app.apk
-          # Checagem rápida do header (PK)
-          [ "$(head -c2 app.apk | hexdump -v -e '/1 "%02X"')" = "504B" ]
+
+          # Checagem simples do header ZIP (PK)
+          test "$(head -c2 app.apk | hexdump -v -e '/1 "%02X"')" = "504B"
           echo "APK_PATH=$GITHUB_WORKSPACE/app.apk" >> "$GITHUB_ENV"
 
       - name: Run tests on Android emulator
@@ -78,31 +102,27 @@ jobs:
             adb wait-for-device
             adb shell getprop ro.build.version.release || true
 
-            # Inicia Appium (local, sempre @latest)
-            npx -y appium@latest --base-path / --log-level warn > ci-logs/appium.log 2>&1 &
+            # Inicia Appium v3 e loga
+            npx -y appium@3 --base-path / --log-level warn > ci-logs/appium.log 2>&1 &
             for i in {1..180}; do (nc -z 127.0.0.1 4723 && break) || sleep 1; done
 
-            # Cria um override do WDIO p/ rodar CI sem mexer no seu arquivo
+            # Override de WDIO para CI (sequencial + flags que evitam erros do settings)
             cat > wdio.ci.android.conf.js <<'EOF'
             const { config } = require('./wdio.android.local.conf.js');
-            // Garantir 1 sessão por vez
             config.maxInstances = 1;
             const caps = Array.isArray(config.capabilities) ? config.capabilities : [config.capabilities || {}];
             config.capabilities = caps.map(c => ({
               ...c,
               maxInstances: 1,
-              // Evita erros "hidden_api_policy_*"
               'appium:ignoreHiddenApiPolicyError': true,
-              // Evita instalar/abrir io.appium.settings
               'appium:skipDeviceInitialization': true,
             }));
             module.exports.config = config;
             EOF
 
-            # (Opcional) sanity check do override
             node -e "const c=require('./wdio.ci.android.conf.js').config; if(c.maxInstances!==1) process.exit(1); console.log('WDIO CI override OK')"
 
-            # Roda 100% sequencial: um spec por vez (evita colisão no emulador)
+            # Executa specs 100% sequenciais (um spec por vez) no mesmo emulador
             EXIT=0
             for SPEC in $(ls -1 test/specs/*.spec.js); do
               echo ">>> Running spec: $SPEC"
@@ -117,6 +137,7 @@ jobs:
         with:
           name: ci-logs
           path: ci-logs/*
+          if-no-files-found: ignore
 
       - name: Gerar Allure site
         if: always()
@@ -146,11 +167,4 @@ jobs:
           name: allure-site
           path: ./allure-site
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./allure-site
-
-      - name: Deploy to GitHub Pages
-        id: deploy
-        uses: actions/deploy-pages@v4
+      - name:
