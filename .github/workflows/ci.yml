@@ -2,19 +2,24 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: ["*"]
   pull_request:
-    branches: [ main ]
   workflow_dispatch:
 
+# Precisamos de write para publicar o Allure em Pages
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
 jobs:
-  android:
+  test:
     name: Build & Test (Android Emulator + Appium)
-    runs-on: macos-14
+    runs-on: ubuntu-latest
     timeout-minutes: 60
 
     env:
-      NODE_VERSION: '20'
+      NODE_VERSION: "20"
       APK_URL_DEFAULT: "https://github.com/webdriverio/native-demo-app/releases/download/0.4.0/Android-NativeDemoApp-0.4.0.apk"
 
     steps:
@@ -25,54 +30,64 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
+          cache: "npm"
 
       - name: Setup Temurin JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
+          distribution: temurin
+          java-version: "17"
 
       - name: Install deps (npm + Appium driver)
         run: |
           set -euxo pipefail
           npm ci
-          npx appium -v || true
-          npx appium driver install uiautomator2 || true
-          npx wdio --version || true
+          # Appium CLI global para o service conseguir invocar "appium"
+          npm i -g appium@next
+          appium -v || true
+          # driver do Android
+          appium driver install uiautomator2 || true
 
-      - name: Download APK (com verificação)
+      - name: Download APK (robusto, com verificação)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euxo pipefail
           mkdir -p ci-logs
           APK_URL="${{ vars.APK_URL != '' && vars.APK_URL || env.APK_URL_DEFAULT }}"
-          echo "Baixando: $APK_URL"
-          curl -L "$APK_URL" -o app.apk
+          echo "Baixando via curl: $APK_URL"
+          curl -L -H "Accept: application/octet-stream" "$APK_URL" -o app.apk || true
+          BYTES=$(wc -c < app.apk || echo 0)
+          if [ "$BYTES" -lt 1000000 ]; then
+            echo "Arquivo pequeno ($BYTES bytes). Fallback para gh release download…"
+            rm -f app.apk
+            gh release download 0.4.0 -R webdriverio/native-demo-app \
+              -p "Android-NativeDemoApp-0.4.0.apk" --output app.apk
+          fi
           test -s app.apk
-          # checa assinatura ZIP (PK)
+          # valida assinatura ZIP (PK)
           head -c 2 app.apk | hexdump -v -e '/1 "%02X"' | grep -qi '^504B$'
           echo "APK_PATH=$PWD/app.apk" >> $GITHUB_ENV
 
       - name: Run tests on Android emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 30
+          api-level: 33
           target: google_apis
           arch: x86_64
-          profile: Nexus 5X
-          force-avd-creation: true
+          profile: pixel_6
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           disable-animations: true
-          emulator-options: -no-window -no-snapshot -no-boot-anim -gpu swiftshader_indirect
           script: |
             set -euxo pipefail
             adb wait-for-device
-            # inicia Appium e guarda logs
-            npx appium --base-path /wd/hub --log-level warn > ci-logs/appium.log 2>&1 &
-            # espera porta 4723 responder
-            for i in {1..60}; do (nc -z localhost 4723 && break) || sleep 1; done
-            # roda WDIO apontando pro APK baixado
+            echo "Node: $(node -v)"
+            echo "Java:"
+            java -version
+            # Roda WDIO diretamente (não depende de script npm)
             npx wdio run wdio.android.local.conf.js
 
+      # artefatos SEMPRE (mesmo com falha)
       - name: Upload CI logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -86,6 +101,7 @@ jobs:
         with:
           name: allure-results
           path: allure-results
+          if-no-files-found: ignore
 
       - name: Build Allure site
         if: always()
@@ -93,28 +109,35 @@ jobs:
           set -euxo pipefail
           npx allure generate --clean allure-results -o allure-site || true
 
-      - name: Upload Allure site
+      - name: Save Allure site
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: allure-site
           path: allure-site
+          if-no-files-found: ignore
 
-  deploy-allure:
+  deploy-pages:
     name: Deploy Allure to GitHub Pages
-    needs: android
+    needs: test
     runs-on: ubuntu-latest
-    if: always()  # publica mesmo se os testes falharem, quando existir o artefato
+    if: always()
+
     steps:
-      - name: Download site
+      - name: Download allure-site artifact (skip se não existir)
+        id: dl
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: allure-site
           path: ./allure-site
-        continue-on-error: true
-      - name: Deploy
-        if: success() || (contains(steps['Download site'].outcome, 'success'))
-        uses: peaceiris/actions-gh-pages@v3
+
+      - name: Upload GitHub Pages artifact
+        if: steps.dl.outcome == 'success' && hashFiles('./allure-site/**') != ''
+        uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./allure-site
+          path: ./allure-site
+
+      - name: Deploy to GitHub Pages
+        if: steps.dl.outcome == 'success' && hashFiles('./allure-site/**') != ''
+        uses: actions/deploy-pages@v4
