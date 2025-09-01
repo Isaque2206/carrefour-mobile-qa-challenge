@@ -39,7 +39,3 @@ npm run test:ios:local
 npm run allure:report
 # abra: ./allure-report/index.html
 ```
-
-Trigger CI: 2025-08-28T17:24:01
-
-Trigger CI: 2025-08-28T17:34:59

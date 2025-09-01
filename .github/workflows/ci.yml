@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -14,7 +14,6 @@ jobs:
   test:
     name: Build & Test (Android Emulator + Appium)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -24,7 +23,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Setup Temurin JDK 11
         uses: actions/setup-java@v4
@@ -32,81 +30,64 @@ jobs:
           distribution: temurin
           java-version: '11'
 
-      # Emulador + execução de testes (o script roda DENTRO desta action)
       - name: Run tests on Android emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 30                 # mais leve e baixa mais rápido que 33
+          api-level: 33
           target: google_apis
           arch: x86_64
-          profile: Nexus 5X             # <== troquei: é um profile suportado hoje
-          force-avd-creation: true      # garante recriação do AVD se algo quebrar
-          emulator-boot-timeout: 1200   # dá tempo para o primeiro boot
-          emulator-options: >
-            -no-window -no-snapshot -noaudio -no-boot-anim
-            -gpu swiftshader_indirect -accel off
+          profile: pixel_6
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           disable-animations: true
           script: |
-            echo "== devices (antes) =="
-            adb devices -l || true
+            set -Eeuo pipefail
+            mkdir -p ci-logs
 
-            node -v
-            java -version
+            echo "== Env versions ==" | tee ci-logs/00_env.txt
+            node -v | tee -a ci-logs/00_env.txt
+            java -version 2>&1 | tee -a ci-logs/00_env.txt
 
-            # deps do projeto
-            npm ci
+            echo "== npm ci ==" | tee ci-logs/01_npm-ci.log
+            npm ci |& tee -a ci-logs/01_npm-ci.log
 
-            # Appium 3
-            npm i -g appium@next
-            appium -v
-            npx --yes appium@next driver install uiautomator2
-            npx --yes appium@next driver list --installed
+            echo "== Install appium@next (v3) global ==" | tee ci-logs/02_appium-install.log
+            npm i -g appium@next |& tee -a ci-logs/02_appium-install.log
+            APP_BIN="$(npm bin -g)"
+            "$APP_BIN/appium" -v |& tee -a ci-logs/02_appium-install.log || true
 
-            echo "== aguardando boot =="
-            adb wait-for-device
-            adb shell 'while [[ $(getprop sys.boot_completed) -ne 1 ]]; do sleep 2; done; input keyevent 82'
+            echo "== Install uiautomator2 driver ==" | tee ci-logs/03_driver-install.log
+            if ! "$APP_BIN/appium" driver install uiautomator2 |& tee -a ci-logs/03_driver-install.log ; then
+              echo "Fallback via npx appium@next" | tee -a ci-logs/03_driver-install.log
+              npx --yes appium@next driver install uiautomator2 |& tee -a ci-logs/03_driver-install.log
+            fi
+            "$APP_BIN/appium" driver list --installed |& tee -a ci-logs/03_driver-install.log || true
 
-            # seus testes (use smoke se quiser acelerar)
-            npm run test:android:ci || npm run test:android:smoke
+            echo "== Run WDIO tests ==" | tee ci-logs/04_tests.log
+            if ! npm run test:android:ci |& tee -a ci-logs/04_tests.log ; then
+              echo "Collecting logcat..." | tee -a ci-logs/04_tests.log
+              adb logcat -d > ci-logs/logcat.txt || true
+              exit 1
+            fi
 
-            # gerar Allure (não falhar a pipeline se não houver)
-            npm run allure:generate || true
+            echo "== Generate Allure ==" | tee ci-logs/05_allure.log
+            npm run allure:generate |& tee -a ci-logs/05_allure.log
 
-
-      # Coletar logs SEMPRE (mesmo se falhar acima)
-      - name: Coletar logs de diagnóstico (sempre)
-        if: always()
-        run: |
-          set -euxo pipefail
-          mkdir -p debug-logs
-          # Logs ADB / Emulador (se disponíveis)
-          adb devices -l || true
-          adb logcat -d > debug-logs/logcat.txt || true
-          cp -v $HOME/.android/adb*.log debug-logs/ 2>/dev/null || true
-          cp -v emulator*.log* debug-logs/ 2>/dev/null || true
-          # Versões
-          {
-            echo "Node: $(node -v || true)"
-            echo "Appium: $(appium -v || true)"
-            echo "Java:"
-            java -version 2>&1 || true
-          } > debug-logs/versions.txt
-
-      - name: Upload debug logs (sempre)
+      # artefatos SEMPRE (mesmo com falha)
+      - name: Upload CI logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: debug-logs
-          path: debug-logs
+          name: ci-logs
+          path: ci-logs
 
-      - name: Upload Allure results
+      - name: Save Allure results
         if: always() && hashFiles('allure-results/**') != ''
         uses: actions/upload-artifact@v4
         with:
           name: allure-results
           path: allure-results
 
-      - name: Upload Allure site
+      - name: Save Allure site
         if: always() && hashFiles('allure-report/**') != ''
         uses: actions/upload-artifact@v4
         with:
@@ -120,7 +101,7 @@ jobs:
     if: always()
 
     steps:
-      - name: Download allure-site artifact (se existir)
+      - name: Download allure-site artifact (skip if não existir)
         id: dl
         continue-on-error: true
         uses: actions/download-artifact@v4
@@ -128,16 +109,12 @@ jobs:
           name: allure-site
           path: ./allure-site
 
-      - name: Nada para publicar (sem Allure)
-        if: steps.dl.outcome != 'success'
-        run: echo "Nenhum artefato 'allure-site' encontrado. Pulando deploy."
-
       - name: Upload GitHub Pages artifact
-        if: steps.dl.outcome == 'success'
+        if: steps.dl.outcome == 'success' && hashFiles('./allure-site/**') != ''
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./allure-site
 
       - name: Deploy to GitHub Pages
-        if: steps.dl.outcome == 'success'
+        if: steps.dl.outcome == 'success' && hashFiles('./allure-site/**') != ''
         uses: actions/deploy-pages@v4
