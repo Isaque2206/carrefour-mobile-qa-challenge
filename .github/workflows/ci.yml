@@ -41,7 +41,6 @@ jobs:
           set -euxo pipefail
           mkdir -p ci-logs
 
-          # deps do projeto
           npm ci
 
           # garantir Appium v3 (compatível com uiautomator2 v5)
@@ -49,7 +48,7 @@ jobs:
           npm i --no-audit --no-fund
           npx -y appium@3 --version
 
-          # ✅ força limpar e reinstalar o driver (evita "already installed")
+          # sempre limpar e instalar o driver certo
           npx -y appium@3 driver uninstall uiautomator2 || true
           npx -y appium@3 driver install 'uiautomator2@^5'
           npx -y appium@3 driver list --installed
@@ -70,12 +69,12 @@ jobs:
           [ "$(head -c2 app.apk | hexdump -v -e '/1 "%02X"')" = "504B" ]
           echo "APK_PATH=$GITHUB_WORKSPACE/app.apk" >> "$GITHUB_ENV"
 
-      - name: Run tests on Android emulator
+      - name: Run tests on Android emulator (ARM)
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 30
+          api-level: 34
           target: google_apis
-          arch: x86_64
+          arch: arm64-v8a          # <<< importante no Apple Silicon
           profile: Nexus 5X
           force-avd-creation: true
           emulator-boot-timeout: 1200
@@ -91,7 +90,7 @@ jobs:
             npx -y appium@3 --base-path / --log-level warn > ci-logs/appium.log 2>&1 &
             for i in {1..180}; do (nc -z 127.0.0.1 4723 && break) || sleep 1; done
 
-            # override WDIO p/ CI (sequencial + flags estáveis)
+            # Override WDIO p/ CI (sequencial + flags estáveis)
             cat > wdio.ci.android.conf.js <<'EOF'
             const { config } = require('./wdio.android.local.conf.js');
             config.maxInstances = 1;
@@ -106,7 +105,6 @@ jobs:
             EOF
             node -e "const c=require('./wdio.ci.android.conf.js').config; if(c.maxInstances!==1) process.exit(1); console.log('WDIO CI override OK')"
 
-            # roda specs 1 a 1
             EXIT=0
             for SPEC in $(ls -1 test/specs/*.spec.js); do
               echo ">>> Running spec: $SPEC"
