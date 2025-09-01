@@ -70,18 +70,19 @@ jobs:
       - name: Run tests on Android emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 33
+          api-level: 34                  # 33 ou 34, prefiro 34 no ARM
           target: google_apis
-          arch: x86_64
+          arch: arm64-v8a                # <- ARM (Apple Silicon)
           profile: pixel_6
+          force-avd-creation: true
           disable-animations: true
-          emulator-options: -no-window -no-snapshot -no-boot-anim -gpu swiftshader_indirect
+          emulator-boot-timeout: 1200    # 20 min (boot no ARM pode demorar)
+          emulator-options: -no-snapshot -no-boot-anim -gpu host
           script: |
             set -euxo pipefail
             adb wait-for-device
-            # inicia Appium e espera a porta 4723
             npx appium --base-path / --log-level warn > ci-logs/appium.log 2>&1 &
-            for i in {1..60}; do (nc -z 127.0.0.1 4723 && break) || sleep 1; done
+            for i in {1..90}; do (nc -z 127.0.0.1 4723 && break) || sleep 1; done
             npx wdio run wdio.android.local.conf.js
 
       - name: Upload CI logs
