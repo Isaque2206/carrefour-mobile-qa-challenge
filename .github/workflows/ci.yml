@@ -36,25 +36,39 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install deps + alinhar Appium 3.x
+      - name: Install deps + alinhar Appium 3.x (idempotente)
         run: |
           set -euxo pipefail
           mkdir -p ci-logs
 
-          # Instala tudo que está no lockfile
+          # 1) Instala deps do projeto
           npm ci
 
-          # Força Appium 3 na árvore do projeto (resolve o peer do driver 5.x)
-          npm i -D appium@^3.0.1 --no-audit --no-fund
+          # 2) Garante Appium 3 no package.json (resolve peer do uiautomator2@5)
+          npm pkg set devDependencies.appium="^3.0.1"
+          npm i --no-audit --no-fund
 
-          # Confere versão do servidor
+          # 3) Confirma servidor Appium 3
           npx -y appium@3 --version
 
-          # Instala o driver UiAutomator2 compatível (linha 5.x)
-          npx -y appium@3 driver install uiautomator2@^5
+          # 4) Driver UiAutomator2: atualiza p/ 5.x se já existir; senão instala
+          if npx -y appium@3 driver list --installed | grep -q 'uiautomator2@'; then
+            # Já existe: tenta atualizar (major -> precisa --unsafe). Não falha se não houver update.
+            npx -y appium@3 driver update uiautomator2 --unsafe || true
+          else
+            # Não existe: instala 5.x
+            npx -y appium@3 driver install uiautomator2@^5 || true
+          fi
 
-          # Lista pra confirmar
-          npx -y appium@3 driver list --installed
+          # 5) Se ainda não estiver em 5.x, força reinstalação limpa
+          if ! npx -y appium@3 driver list --installed | grep -q 'uiautomator2@5'; then
+            npx -y appium@3 driver uninstall uiautomator2 || true
+            npx -y appium@3 driver install uiautomator2@^5
+          fi
+
+          # 6) Mostra estado final
+          npx -y appium@3 driver list --installed || true
+
 
 
       - name: Download APK (robusto, sem --latest)
