@@ -1,4 +1,4 @@
-name: Android E2E
+name: CI Android + Appium
 
 on:
   push:
@@ -36,58 +36,39 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install deps + alinhar Appium 3.x (idempotente)
+      - name: Install deps + alinhar Appium/driver
         run: |
           set -euxo pipefail
           mkdir -p ci-logs
 
-          # 1) Instala deps do projeto
+          # instala deps do projeto
           npm ci
 
-          # 2) Garante Appium 3 no package.json (resolve peer do uiautomator2@5)
-          npm pkg set devDependencies.appium="^3.0.1"
+          # garante Appium v3 no projeto para evitar ERESOLVE com o driver v5
+          npm pkg set 'devDependencies.appium=^3.0.1'
           npm i --no-audit --no-fund
 
-          # 3) Confirma servidor Appium 3
+          # verifica appium
           npx -y appium@3 --version
 
-          # 4) Driver UiAutomator2: atualiza p/ 5.x se já existir; senão instala
-          if npx -y appium@3 driver list --installed | grep -q 'uiautomator2@'; then
-            # Já existe: tenta atualizar (major -> precisa --unsafe). Não falha se não houver update.
-            npx -y appium@3 driver update uiautomator2 --unsafe || true
-          else
-            # Não existe: instala 5.x
-            npx -y appium@3 driver install uiautomator2@^5 || true
-          fi
-
-          # 5) Se ainda não estiver em 5.x, força reinstalação limpa
-          if ! npx -y appium@3 driver list --installed | grep -q 'uiautomator2@5'; then
-            npx -y appium@3 driver uninstall uiautomator2 || true
-            npx -y appium@3 driver install uiautomator2@^5
-          fi
-
-          # 6) Mostra estado final
+          # garante uiautomator2 v5 (remove v2.x se existir)
           npx -y appium@3 driver list --installed || true
+          if npx -y appium@3 driver list --installed | grep -q 'uiautomator2@'; then
+            npx -y appium@3 driver uninstall uiautomator2 || true
+          fi
+          npx -y appium@3 driver install 'uiautomator2@^5'
+          npx -y appium@3 driver list --installed
 
-
-
-      - name: Download APK (robusto, sem --latest)
+      - name: Download APK (robusto)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euxo pipefail
           tmpdir="$(mktemp -d)"
 
-          # 1) Tenta pegar o tag mais recente via JSON
+          # tenta pegar o tag mais recente (estável)
           TAG="$(gh release view --repo webdriverio/native-demo-app --json tagName -q .tagName 2>/dev/null || true)"
-
-          # 2) Fallback: lista releases (sem draft/pre) e pega o mais novo
-          if [ -z "${TAG:-}" ] || [ "${TAG}" = "null" ]; then
-            TAG="$(gh release list --repo webdriverio/native-demo-app --limit 50 --json tagName,isDraft,isPrerelease,createdAt \
-              -q 'map(select(.isDraft==false)) | map(select(.isPrerelease==false)) | sort_by(.createdAt) | reverse | .[0].tagName' || true)"
-          fi
-
-          # 3) Último fallback: tag conhecida
+          # fallback
           if [ -z "${TAG:-}" ] || [ "${TAG}" = "null" ]; then
             TAG="v1.0.8"
           fi
@@ -97,9 +78,8 @@ jobs:
           APK_FILE="$(find "$tmpdir" -name '*.apk' | head -n1)"
           test -n "$APK_FILE"
           mv "$APK_FILE" app.apk
-
-          # Checagem simples do header ZIP (PK)
-          test "$(head -c2 app.apk | hexdump -v -e '/1 "%02X"')" = "504B"
+          # valida header ZIP (PK)
+          [ "$(head -c2 app.apk | hexdump -v -e '/1 "%02X"')" = "504B" ]
           echo "APK_PATH=$GITHUB_WORKSPACE/app.apk" >> "$GITHUB_ENV"
 
       - name: Run tests on Android emulator
@@ -108,7 +88,7 @@ jobs:
           api-level: 30
           target: google_apis
           arch: x86_64
-          profile: Pixel 5
+          profile: Nexus 5X
           force-avd-creation: true
           emulator-boot-timeout: 1200
           disable-animations: true
@@ -119,11 +99,11 @@ jobs:
             adb wait-for-device
             adb shell getprop ro.build.version.release || true
 
-            # Inicia Appium v3 e loga
+            # inicia Appium v3 e loga
             npx -y appium@3 --base-path / --log-level warn > ci-logs/appium.log 2>&1 &
             for i in {1..180}; do (nc -z 127.0.0.1 4723 && break) || sleep 1; done
 
-            # Override WDIO para CI (sequencial + flags para evitar erros do settings)
+            # override leve de WDIO p/ rodar sequencial + flags estáveis
             cat > wdio.ci.android.conf.js <<'EOF'
             const { config } = require('./wdio.android.local.conf.js');
             config.maxInstances = 1;
@@ -138,7 +118,7 @@ jobs:
             EOF
             node -e "const c=require('./wdio.ci.android.conf.js').config; if(c.maxInstances!==1) process.exit(1); console.log('WDIO CI override OK')"
 
-            # Executa specs 100% sequenciais no mesmo emulador
+            # roda specs 1 a 1 (evita travas intermitentes no Settings app)
             EXIT=0
             for SPEC in $(ls -1 test/specs/*.spec.js); do
               echo ">>> Running spec: $SPEC"
@@ -175,6 +155,7 @@ jobs:
     runs-on: ubuntu-latest
     concurrency:
       group: gh-pages
+      cancel-in-progress: true
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -186,7 +167,7 @@ jobs:
           path: ./allure-site
 
       - name: Configure Pages
-        uses: actions/configure-pages@v4
+        uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
