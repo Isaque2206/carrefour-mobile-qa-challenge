@@ -6,7 +6,6 @@ on:
   pull_request:
   workflow_dispatch:
 
-
 permissions:
   contents: write
   pages: write
@@ -20,8 +19,6 @@ jobs:
 
     env:
       NODE_VERSION: "20"
-      
-      APK_URL_DEFAULT: "https://github.com/webdriverio/native-demo-app/releases/download/0.4.0/Android-NativeDemoApp-0.4.0.apk"
 
     steps:
       - name: Checkout
@@ -53,17 +50,19 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p ci-logs
-          APK_URL="${{ vars.APK_URL != '' && vars.APK_URL || env.APK_URL_DEFAULT }}"
-          echo "Baixando via curl: $APK_URL"
-          curl -L -H "Accept: application/octet-stream" "$APK_URL" -o app.apk || true
-          BYTES=$(wc -c < app.apk || echo 0)
-          if [ "$BYTES" -lt 1000000 ]; then
-            echo "Arquivo pequeno ($BYTES bytes). Fallback para gh release download…"
-            rm -f app.apk
-            gh release download 0.4.0 -R webdriverio/native-demo-app \
-              -p "Android-NativeDemoApp-0.4.0.apk" --output app.apk
+          # 1) Tente baixar o APK mais recente via GH CLI (pattern Android)
+          tmpdir="$(mktemp -d)"
+          if ! gh release download --repo webdriverio/native-demo-app --latest \
+               -D "$tmpdir" -p '*[Aa]ndroid*apk'; then
+            echo "Latest não encontrado, tentando tags conhecidas…"
+            gh release download v1.0.8 --repo webdriverio/native-demo-app \
+               -D "$tmpdir" -p '*[Aa]ndroid*apk' || \
+            gh release download v0.4.0 --repo webdriverio/native-demo-app \
+               -D "$tmpdir" -p 'Android-NativeDemoApp-0.4.0.apk'
           fi
-          test -s app.apk
+          APK_FILE="$(find "$tmpdir" -name '*.apk' | head -n1)"
+          test -n "$APK_FILE"
+          mv "$APK_FILE" app.apk
           # valida assinatura ZIP (PK)
           head -c 2 app.apk | hexdump -v -e '/1 "%02X"' | grep -qi '^504B$'
           echo "APK_PATH=$PWD/app.apk" >> $GITHUB_ENV
@@ -80,11 +79,9 @@ jobs:
           script: |
             set -euxo pipefail
             adb wait-for-device
-            # Inicia Appium e guarda logs
+            # inicia Appium e espera a porta 4723
             npx appium --base-path / --log-level warn > ci-logs/appium.log 2>&1 &
-            # espera a porta 4723 ficar pronta
             for i in {1..60}; do (nc -z 127.0.0.1 4723 && break) || sleep 1; done
-            # Executa WDIO (usa APK_PATH)
             npx wdio run wdio.android.local.conf.js
 
       - name: Upload CI logs
@@ -120,7 +117,7 @@ jobs:
     name: Deploy Allure to GitHub Pages
     needs: test
     runs-on: ubuntu-latest
-    if: ${{ always() && vars.PUBLISH_PAGES == 'true' }}   # habilite criando a variável no repo
+    if: ${{ always() && vars.PUBLISH_PAGES == 'true' }}  # Habilite criando a variável no repo
 
     steps:
       - name: Download allure-site artifact
