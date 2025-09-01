@@ -5,19 +5,12 @@ exports.config = {
   runner: 'local',
 
   specs: ['./test/specs/**/*.spec.js'],
-
   maxInstances: 1,
 
-  
-  services: [
-    ['appium', {
-      args: {
-        address: '127.0.0.1',
-        port: 4723,
-        basePath: '/'     
-      }
-    }]
-  ],
+ 
+  hostname: '127.0.0.1',
+  port: 4723,
+  path: '/',
 
   framework: 'mocha',
   reporters: [
@@ -25,25 +18,30 @@ exports.config = {
     ['allure', { outputDir: 'allure-results', disableWebdriverStepsReporting: true }]
   ],
 
+  services: [],
+
   capabilities: [{
     platformName: 'Android',
     'appium:automationName': 'UiAutomator2',
     'appium:deviceName': 'Android Emulator',
-   
     'appium:platformVersion': '13',
 
-   
+    
     'appium:app': process.env.APK_PATH || appPath,
 
-  
-
+   
     'appium:autoGrantPermissions': true,
     'appium:newCommandTimeout': 240,
-    'appium:noReset': true
+    'appium:noReset': false,
+    'appium:adbExecTimeout': 120000
   }],
 
   mochaOpts: {
     ui: 'bdd',
     timeout: 600000
-  }
+  },
+
+  waitforTimeout: 20000,
+  connectionRetryTimeout: 120000,
+  connectionRetryCount: 3
 };

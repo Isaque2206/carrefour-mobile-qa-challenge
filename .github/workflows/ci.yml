@@ -6,7 +6,7 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Precisamos de write para publicar o Allure em Pages
+
 permissions:
   contents: write
   pages: write
@@ -15,11 +15,12 @@ permissions:
 jobs:
   test:
     name: Build & Test (Android Emulator + Appium)
-    runs-on: ubuntu-latest
+    runs-on: macos-14
     timeout-minutes: 60
 
     env:
       NODE_VERSION: "20"
+      
       APK_URL_DEFAULT: "https://github.com/webdriverio/native-demo-app/releases/download/0.4.0/Android-NativeDemoApp-0.4.0.apk"
 
     steps:
@@ -42,10 +43,8 @@ jobs:
         run: |
           set -euxo pipefail
           npm ci
-          # Appium CLI global para o service conseguir invocar "appium"
           npm i -g appium@next
           appium -v || true
-          # driver do Android
           appium driver install uiautomator2 || true
 
       - name: Download APK (robusto, com verificação)
@@ -76,18 +75,18 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_6
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           disable-animations: true
+          emulator-options: -no-window -no-snapshot -no-boot-anim -gpu swiftshader_indirect
           script: |
             set -euxo pipefail
             adb wait-for-device
-            echo "Node: $(node -v)"
-            echo "Java:"
-            java -version
-            # Roda WDIO diretamente (não depende de script npm)
+            # Inicia Appium e guarda logs
+            npx appium --base-path / --log-level warn > ci-logs/appium.log 2>&1 &
+            # espera a porta 4723 ficar pronta
+            for i in {1..60}; do (nc -z 127.0.0.1 4723 && break) || sleep 1; done
+            # Executa WDIO (usa APK_PATH)
             npx wdio run wdio.android.local.conf.js
 
-      # artefatos SEMPRE (mesmo com falha)
       - name: Upload CI logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -121,23 +120,19 @@ jobs:
     name: Deploy Allure to GitHub Pages
     needs: test
     runs-on: ubuntu-latest
-    if: always()
+    if: ${{ always() && vars.PUBLISH_PAGES == 'true' }}   # habilite criando a variável no repo
 
     steps:
-      - name: Download allure-site artifact (skip se não existir)
-        id: dl
-        continue-on-error: true
+      - name: Download allure-site artifact
         uses: actions/download-artifact@v4
         with:
           name: allure-site
           path: ./allure-site
 
       - name: Upload GitHub Pages artifact
-        if: steps.dl.outcome == 'success' && hashFiles('./allure-site/**') != ''
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./allure-site
 
       - name: Deploy to GitHub Pages
-        if: steps.dl.outcome == 'success' && hashFiles('./allure-site/**') != ''
         uses: actions/deploy-pages@v4
