@@ -41,21 +41,16 @@ jobs:
           set -euxo pipefail
           mkdir -p ci-logs
 
-          # instala deps do projeto
+          # deps do projeto
           npm ci
 
-          # garante Appium v3 no projeto para evitar ERESOLVE com o driver v5
+          # garantir Appium v3 (compatível com uiautomator2 v5)
           npm pkg set 'devDependencies.appium=^3.0.1'
           npm i --no-audit --no-fund
-
-          # verifica appium
           npx -y appium@3 --version
 
-          # garante uiautomator2 v5 (remove v2.x se existir)
-          npx -y appium@3 driver list --installed || true
-          if npx -y appium@3 driver list --installed | grep -q 'uiautomator2@'; then
-            npx -y appium@3 driver uninstall uiautomator2 || true
-          fi
+          # ✅ força limpar e reinstalar o driver (evita "already installed")
+          npx -y appium@3 driver uninstall uiautomator2 || true
           npx -y appium@3 driver install 'uiautomator2@^5'
           npx -y appium@3 driver list --installed
 
@@ -65,20 +60,13 @@ jobs:
         run: |
           set -euxo pipefail
           tmpdir="$(mktemp -d)"
-
-          # tenta pegar o tag mais recente (estável)
           TAG="$(gh release view --repo webdriverio/native-demo-app --json tagName -q .tagName 2>/dev/null || true)"
-          # fallback
-          if [ -z "${TAG:-}" ] || [ "${TAG}" = "null" ]; then
-            TAG="v1.0.8"
-          fi
+          if [ -z "${TAG:-}" ] || [ "${TAG}" = "null" ]; then TAG="v1.0.8"; fi
           echo "Usando TAG: $TAG"
-
           gh release download "$TAG" --repo webdriverio/native-demo-app -D "$tmpdir" -p '*[Aa]ndroid*apk'
           APK_FILE="$(find "$tmpdir" -name '*.apk' | head -n1)"
           test -n "$APK_FILE"
           mv "$APK_FILE" app.apk
-          # valida header ZIP (PK)
           [ "$(head -c2 app.apk | hexdump -v -e '/1 "%02X"')" = "504B" ]
           echo "APK_PATH=$GITHUB_WORKSPACE/app.apk" >> "$GITHUB_ENV"
 
@@ -99,11 +87,11 @@ jobs:
             adb wait-for-device
             adb shell getprop ro.build.version.release || true
 
-            # inicia Appium v3 e loga
+            # Appium v3
             npx -y appium@3 --base-path / --log-level warn > ci-logs/appium.log 2>&1 &
             for i in {1..180}; do (nc -z 127.0.0.1 4723 && break) || sleep 1; done
 
-            # override leve de WDIO p/ rodar sequencial + flags estáveis
+            # override WDIO p/ CI (sequencial + flags estáveis)
             cat > wdio.ci.android.conf.js <<'EOF'
             const { config } = require('./wdio.android.local.conf.js');
             config.maxInstances = 1;
@@ -118,7 +106,7 @@ jobs:
             EOF
             node -e "const c=require('./wdio.ci.android.conf.js').config; if(c.maxInstances!==1) process.exit(1); console.log('WDIO CI override OK')"
 
-            # roda specs 1 a 1 (evita travas intermitentes no Settings app)
+            # roda specs 1 a 1
             EXIT=0
             for SPEC in $(ls -1 test/specs/*.spec.js); do
               echo ">>> Running spec: $SPEC"
